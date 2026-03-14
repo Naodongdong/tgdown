@@ -71,17 +71,22 @@
 
 ```json
 {
-  "api_id": 12345678,
-  "api_hash": "your_api_hash_string",
-  "target_group_name": "downapp",
+  "api_id": 368,
+  "api_hash": "e1ffa7e97d1545eb2d",
   "download_path": "./downloads",
   "web_port": 8765,
-  "web_bind": "0.0.0.0",
+  "target_group_name": "down",
   "concurrent_downloads": 3,
   "push_status_to_group": true,
-  "download_retries": 2,
-  "download_stall_seconds": 600
+  "openai_api_key": "",
+  "openai_base_url": "",
+  "tg_proxy_type": "",
+  "tg_proxy_host": "",
+  "tg_proxy_port": 7893,
+  "tg_proxy_username": "",
+  "tg_proxy_password": ""
 }
+
 ```
 
 ---
