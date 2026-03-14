@@ -234,13 +234,21 @@ def _save_download_record(file_path: str, file_size: int, username: str, message
         conn.close()
 
 
-def _get_download_records(limit: int = 200):
+def _get_download_records_total() -> int:
+    with _db_lock:
+        conn = sqlite3.connect(str(DB_PATH))
+        total = conn.execute("SELECT COUNT(*) FROM download_record").fetchone()[0]
+        conn.close()
+    return total
+
+
+def _get_download_records(limit: int = 20, offset: int = 0):
     with _db_lock:
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            "SELECT id, file_path, file_name, file_size, username, message_time, download_time, duration_sec FROM download_record ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT id, file_path, file_name, file_size, username, message_time, download_time, duration_sec FROM download_record ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         rows = cur.fetchall()
         conn.close()
@@ -256,11 +264,6 @@ def _get_status():
             "queue_size": _queue_size,
             "concurrent_downloads": CONCURRENT_DOWNLOADS,
         }
-    try:
-        data["download_records"] = _get_download_records()
-    except Exception as e:
-        log.warning("读取下载记录失败: %s", e)
-        data["download_records"] = []
     return data
 
 
@@ -778,6 +781,21 @@ app = FastAPI()
 @app.get("/api/status")
 def api_status():
     return _get_status()
+
+
+@app.get("/api/download-records")
+def api_download_records(page: int = 1, per_page: int = 20):
+    """分页查询下载成功记录。page 从 1 开始，per_page 默认 20。"""
+    page = max(1, page)
+    per_page = min(max(1, per_page), 100)
+    try:
+        total = _get_download_records_total()
+        offset = (page - 1) * per_page
+        items = _get_download_records(limit=per_page, offset=offset)
+        return {"items": items, "total": total, "page": page, "per_page": per_page}
+    except Exception as e:
+        log.warning("分页读取下载记录失败: %s", e)
+        return {"items": [], "total": 0, "page": page, "per_page": per_page}
 
 
 @app.get("/")

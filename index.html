@@ -91,6 +91,25 @@
     .error-msg { color: var(--error); font-size: 0.85rem; }
     .updated { font-size: 0.75rem; color: var(--muted); margin-top: 0.75rem; }
     .empty-hint { color: var(--muted); font-size: 0.9rem; }
+    .pagination {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .pagination button {
+      background: var(--border);
+      color: var(--text);
+      border: none;
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    .pagination button:hover:not(:disabled) { background: var(--accent); }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pagination span { font-size: 0.875rem; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -156,9 +175,14 @@
         </tr>
       </thead>
       <tbody id="download-records-body">
-        <tr><td colspan="6" class="empty-hint">暂无</td></tr>
+        <tr><td colspan="6" class="empty-hint">加载中…</td></tr>
       </tbody>
     </table>
+    <div class="pagination" id="records-pagination">
+      <button type="button" id="records-prev">上一页</button>
+      <span id="records-page-info">第 1 页 / 共 0 条</span>
+      <button type="button" id="records-next">下一页</button>
+    </div>
     <div class="updated" id="updated">最后更新: -</div>
   </div>
 
@@ -266,20 +290,53 @@
         }).join('');
       }
 
-      function formatSize(bytes) {
-        if (bytes == null || bytes === '') return '-';
-        const n = Number(bytes);
-        if (n >= 1 << 30) return (n / (1 << 30)).toFixed(2) + ' GB';
-        if (n >= 1 << 20) return (n / (1 << 20)).toFixed(2) + ' MB';
-        if (n >= 1 << 10) return (n / (1 << 10)).toFixed(2) + ' KB';
-        return n + ' B';
+      document.getElementById('updated').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
+    }
+
+    const RECORDS_PER_PAGE = 20;
+    let recordsCurrentPage = 1;
+    let recordsTotal = 0;
+
+    function formatSize(bytes) {
+      if (bytes == null || bytes === '') return '-';
+      const n = Number(bytes);
+      if (n >= 1 << 30) return (n / (1 << 30)).toFixed(2) + ' GB';
+      if (n >= 1 << 20) return (n / (1 << 20)).toFixed(2) + ' MB';
+      if (n >= 1 << 10) return (n / (1 << 10)).toFixed(2) + ' KB';
+      return n + ' B';
+    }
+
+    function formatDuration(sec) {
+      if (sec == null || sec === '') return '-';
+      const s = Number(sec);
+      if (s < 60) return s + ' 秒';
+      const m = Math.floor(s / 60);
+      const r = Math.floor(s % 60);
+      return r > 0 ? m + ' 分 ' + r + ' 秒' : m + ' 分';
+    }
+
+    async function fetchDownloadRecords(page) {
+      try {
+        const r = await fetch(`/api/download-records?page=${page}&per_page=${RECORDS_PER_PAGE}`);
+        return await r.json();
+      } catch (e) {
+        console.error(e);
+        return { items: [], total: 0, page: 1, per_page: RECORDS_PER_PAGE };
       }
-      const records = data.download_records || [];
+    }
+
+    function renderRecords(data) {
+      const items = data.items || [];
+      const total = data.total ?? 0;
+      const page = data.page ?? 1;
+      recordsCurrentPage = page;
+      recordsTotal = total;
+
       const recordsBody = document.getElementById('download-records-body');
-      if (records.length === 0) {
+      if (items.length === 0) {
         recordsBody.innerHTML = '<tr><td colspan="6" class="empty-hint">暂无</td></tr>';
       } else {
-        recordsBody.innerHTML = records.map(r => {
+        recordsBody.innerHTML = items.map(r => {
           const duration = r.duration_sec != null ? formatDuration(r.duration_sec) : '-';
           return `<tr>
             <td class="file-path">${escapeHtml(r.file_name || '-')}</td>
@@ -292,17 +349,35 @@
         }).join('');
       }
 
-      document.getElementById('updated').textContent = '最后更新: ' + new Date().toLocaleTimeString('zh-CN');
+      const totalPages = Math.max(1, Math.ceil(total / RECORDS_PER_PAGE));
+      document.getElementById('records-page-info').textContent = `第 ${page} 页 / 共 ${total} 条`;
+      document.getElementById('records-prev').disabled = page <= 1;
+      document.getElementById('records-next').disabled = page >= totalPages;
+    }
+
+    async function loadRecordsPage(page) {
+      const data = await fetchDownloadRecords(page);
+      renderRecords(data);
     }
 
     (async function tick() {
       const data = await fetchStatus();
       render(data);
+      await loadRecordsPage(1);
     })();
     setInterval(async () => {
       const data = await fetchStatus();
       render(data);
+      await loadRecordsPage(recordsCurrentPage);
     }, 2000);
+
+    document.getElementById('records-prev').addEventListener('click', () => {
+      if (recordsCurrentPage > 1) loadRecordsPage(recordsCurrentPage - 1);
+    });
+    document.getElementById('records-next').addEventListener('click', () => {
+      const totalPages = Math.max(1, Math.ceil(recordsTotal / RECORDS_PER_PAGE));
+      if (recordsCurrentPage < totalPages) loadRecordsPage(recordsCurrentPage + 1);
+    });
   </script>
 </body>
 </html>
