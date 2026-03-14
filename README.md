@@ -132,6 +132,19 @@ python app.py
 ## Docker 部署
 
 
+
+```bash
+cd tgdown
+# 运行（挂载 data 目录，端口 8765）
+docker run --rm -it \
+  --name tgdown \
+  --network host \
+  -v "$(pwd)/data:/data" \
+  xxgl/tgdown:1.0
+```
+
+
+
 ```bash
 cd tgdown
 # 运行（挂载 data 目录，端口 8765）
@@ -139,9 +152,12 @@ docker run -d \
   --name tgdown \
   --network host \
   -v "$(pwd)/data:/data" \
-  -v "$(pwd)/data/downloads:/data/downloads" \
+  -v "$(pwd)/data/downloads:/downloads" \
   --restart=always \
   xxgl/tgdown:1.0
+  
+  
+  
 ```
 
 **注意**：
