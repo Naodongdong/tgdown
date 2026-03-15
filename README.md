@@ -97,14 +97,16 @@
 
 ```bash
 cd tgdown
-# 第一次使用需要初始化session信息
+# 第一次使用需要初始化session信息，运行脚本后，输入手机号然后发送验证码，用验证码登录成功后获取到session就可以了
 docker run --rm -it \
   --name tgdown \
   --network host \
   -v "$(pwd)/data:/data" \
   xxgl/tgdown:1.0
 ```
-
+![init](/docs/images/init.png)
+![yzm](/docs/images/yzm.png)
+![session](/docs/images/session.png)
 ```bash
 cd tgdown
 # 运行（挂载 data 和 downloads 目录，端口 8765）
@@ -119,6 +121,10 @@ docker run -d \
 下载文件名称的两种格式
 - 1、根据文案ai生成：文件名+时间
 - 2、空文案：时间+视频文件名
+
+
+![qun](/docs/images/qun.png)
+![down](/docs/images/down.png)
 
 ## 许可证
 
