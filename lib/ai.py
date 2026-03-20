@@ -87,7 +87,7 @@ _FILENAME_PUNCT_TO_UNDERSCORE = set('，。、；：！？,.;:!?\'" \t\n\r')
 
 def _sanitize_filename(s: str) -> str:
     """清理 AI 生成的文件名：只保留中英文、数字和部分安全字符，标点一律改为下划线。"""
-    s = unicodedata.normalize("NFKC", s.strip().strip('"\''))
+    s = unicodedata.normalize("NFKC", s.strip().strip('\"\\\''))
     cleaned: list[str] = []
     for ch in s:
         if ch in _FILENAME_FORBIDDEN or ch in _FILENAME_PUNCT_TO_UNDERSCORE:
@@ -133,7 +133,7 @@ def generate_video_filename_from_text(
 格式规则：
 1. 输出中**禁止出现空格和任何标点**（包括逗号、句号、顿号等），多个关键词只用**半角下划线**_连接，例如：词A_词B_词C。
 2. 不要加文件扩展名、不要加引号、不要输出任何解释，只输出一行纯文件名。
-3. 不要使用 / \\ : * ? " < > | 等非法文件名字符；可用中文、英文、数字、下划线、短横线，中文关键词请**直接保留中文**，不要转成拼音。
+3. 不要使用 / \\ : * ? \" < > | 等非法文件名字符；可用中文、英文、数字、下划线、短横线，中文关键词请**直接保留中文**，不要转成拼音。
 4. 只输出有意义的**实词/关键词**，不要输出虚词、助词（如：的、了、被、让、叫、是、在、把、让、给、着、过等）。
 5. 关键词按原文提取，不要美化，不要去除露骨或成人向描述；若词过长可适当缩写。
 """
@@ -172,7 +172,9 @@ def run_conversation(model: str = "gpt-3.5-turbo"):
 
 if __name__ == "__main__":
     # run_conversation()
-    print(generate_video_filename_from_text("""
+    print(
+        generate_video_filename_from_text(
+            """
     📋 消息原文:
 #狙击手 (2022)
 
@@ -193,12 +195,13 @@ if __name__ == "__main__":
 😀😃😄😁🥹😅🤣🥲☺️⚡️ 人民币注册 ⚡️ USDT注册⚡️彩票入口
 ⚡️⚡️⚡️⚡️⚡️⚡️⚡️⚡️ 支持汇旺USDT存提款
 😂😂😂😂😂😂😂😂 不限ip，无须实名
-❤️🔥❤️😁 不限ip  U存U取 无须实名  
+❤️🔥❤️😁 不限ip  U存U取 无须实名  
 😀 国际真人电子0审核出款  
 😍😍😍😍😍😍  电子真人0审核秒出款
 🩷❤️🧡💛💚🩵💙💜🖤🩶优惠最多，提款最快！凯旋一夜暴富不是梦
 
 #电影 #高清 #高清电影院 #影视
-    
-    
-    """))
+    """
+        )
+    )
+

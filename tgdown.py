@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - 仅在未安装 PySocks 时触发
     socks = None  # type: ignore
 
 try:
-    from ai import generate_video_filename_from_text
+    from lib.ai import generate_video_filename_from_text
 except ImportError:
     generate_video_filename_from_text = None
 from fastapi.responses import FileResponse
