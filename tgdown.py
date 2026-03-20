@@ -302,16 +302,31 @@ async def _push_status(text: str):
 
 
 async def _ensure_target_chat():
-    """确保 _target_chat_id 已指向目标群（按名称 TARGET_GROUP_NAME 查找）。"""
+    """确保 _target_chat_id 已指向目标群（按名称/标题）。"""
     global _target_chat_id
     if _target_chat_id is not None:
         return
+    target_name = str(TARGET_GROUP_NAME or "").strip()
+    target_name_lc = target_name.lower()
     try:
-        chat = await client.get_entity(TARGET_GROUP_NAME)
+        chat = await client.get_entity(target_name)
         _target_chat_id = chat.id
         log.info("目标群 chat_id 初始化为 %s", _target_chat_id)
     except Exception as e:
-        log.warning("根据名称 %s 获取目标群失败: %s", TARGET_GROUP_NAME, e)
+        log.warning("根据名称 %s 获取目标群失败，尝试按群标题遍历匹配: %s", target_name, e)
+        try:
+            async for dialog in client.iter_dialogs():
+                title = str(getattr(dialog, "name", None) or getattr(dialog.entity, "title", None) or "").strip()
+                if not title:
+                    continue
+                title_lc = title.lower()
+                if title == target_name or title_lc == target_name_lc:
+                    _target_chat_id = dialog.id
+                    log.info("通过群标题匹配到目标群 chat_id: %s", _target_chat_id)
+                    return
+            log.warning("按群标题未匹配到目标群: %s", target_name)
+        except Exception as e2:
+            log.warning("遍历会话匹配目标群失败: %s", e2)
 
 
 def _message_has_video(msg) -> bool:
@@ -744,7 +759,9 @@ async def handler(event):
     if not event.is_group:
         return
     chat = await event.get_chat()
-    if chat.title != TARGET_GROUP_NAME:
+    chat_title = str(getattr(chat, "title", "") or "").strip().lower()
+    target_title = str(TARGET_GROUP_NAME or "").strip().lower()
+    if chat_title != target_title:
         return
     if _target_chat_id is None:
         _target_chat_id = event.chat_id
@@ -841,6 +858,7 @@ async def _cron_send_current_time_once(send_dt: datetime):
         time_str = send_dt.strftime(CRON_SEND_CURRENT_TIME_TIME_FORMAT)
         text = CRON_SEND_CURRENT_TIME_MESSAGE_TEMPLATE.format(time=time_str)
         await client.send_message(_target_chat_id, text)
+        log.info("cron 已发送当前时间: %s", time_str)
     except Exception as e:
         log.warning("cron 发送当前时间到群失败: %s", e)
 
@@ -867,6 +885,7 @@ async def _cron_send_current_time_loop():
             second_at_beginning=second_at_beginning,
         )
         next_dt = ci.get_next(datetime)
+        log.info("cron 定时发送已启用: expr=%s, next=%s", expr, next_dt.strftime("%Y-%m-%d %H:%M:%S"))
     except Exception as e:
         log.error("cron 表达式解析失败: %r，错误: %s", expr, e)
         return
@@ -883,6 +902,7 @@ async def _cron_send_current_time_loop():
         await _cron_send_current_time_once(next_dt)
         try:
             next_dt = ci.get_next(datetime)
+            log.info("cron 下一次触发时间: %s", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
         except Exception as e:
             log.error("cron 计算下一次触发时间失败: %s", e)
             return
