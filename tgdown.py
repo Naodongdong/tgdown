@@ -94,7 +94,7 @@ CRON_SEND_CURRENT_TIME_ENABLED = bool(CRON_SEND_CURRENT_TIME_CRON)
 
 # 为了让配置文件尽量“只放 cron 表达式”，时间格式与文案在代码里使用默认值。
 CRON_SEND_CURRENT_TIME_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-CRON_SEND_CURRENT_TIME_MESSAGE_TEMPLATE = "当前时间：{time}"
+CRON_SEND_CURRENT_TIME_MESSAGE_TEMPLATE = "corn定时发送 - 当前时间：{time}"
 
 if CRON_SEND_CURRENT_TIME_ENABLED and croniter is None:
     log.error("已配置 cron_send_current_time_cron，但缺少 croniter 依赖，请运行: pip install croniter")
