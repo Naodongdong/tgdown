@@ -88,11 +88,12 @@
 cd tgdown
 # 第一次使用需要初始化session信息，运行脚本后，输入手机号然后发送验证码，用验证码登录成功后获取到session就可以了
 # 第一次使用先手动在挂载目录下创建配置文件 config.json 然后运行容器
+# 默认amd架构, 如果需要arm架构 运行的时候修改镜像版本为 xxgl/tgdown:1.1-arm
 docker run --rm -it \
   --name tgdown \
   --network host \
   -v "$(pwd)/data:/data" \
-  xxgl/tgdown:1.0
+  xxgl/tgdown:1.1
 ```
 ![init](/docs/images/init.png)
 ![yzm](/docs/images/yzm.png)
@@ -106,7 +107,7 @@ docker run -d \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/downloads:/downloads" \
   --restart=always \
-  xxgl/tgdown:1.0
+  xxgl/tgdown:1.1
 ```
 下载文件命名规则
 - 1、消息有文案且 AI 命名成功：`AI文件名_时间_ai.mp4`
