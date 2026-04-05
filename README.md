@@ -49,26 +49,6 @@
 | `cron_send_current_time_cron` | `""` | cron 表达式：支持 5 字段（分钟 小时 日 月 星期）或 6 字段（秒 分钟 小时 日 月 星期） |
 | `cron_push_download_progress_cron` | `""` | 定时推送下载进度；仅当存在下载中的任务时才会发到目标群 |
 
-### 代理（可选）
-
-```json
-"tg_proxy_type": "socks5",
-"tg_proxy_host": "127.0.0.1",
-"tg_proxy_port": 1080,
-"tg_proxy_username": "",
-"tg_proxy_password": ""
-```
-
-### AI 文件名（可选）
-
-若需根据消息文案或原文件名生成更好看的文件名，在 `data/config.json` 中配置 OpenAI 兼容 API：
-
-```json
-"openai_api_key": "your-api-key",
-"openai_base_url": "https://api.openai.com/v1"
-```
-未配置时不影响下载，仅使用时间戳等规则命名。
-
 ### 配置示例
 
 ```json
