@@ -7,6 +7,7 @@
   "concurrent_downloads": 3,
   "push_status_to_group": true,
   "cron_send_current_time_cron": "1 1 9 * *",
+  "cron_push_download_progress_cron": "",
   "openai_api_key": "fk210f5ny2N8hPKX1XewKnw",
   "openai_base_url": "http.net",
   "tg_proxy_type": "http",

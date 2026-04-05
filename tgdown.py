@@ -91,6 +91,8 @@ DOWNLOAD_STALL_SECONDS = max(0, int(_config.get("download_stall_seconds", 600)))
 # - 6 字段：秒 分钟 小时 日 月 星期（例如：*/10 * * * * *）
 CRON_SEND_CURRENT_TIME_CRON = str(_config.get("cron_send_current_time_cron", "")).strip()
 CRON_SEND_CURRENT_TIME_ENABLED = bool(CRON_SEND_CURRENT_TIME_CRON)
+CRON_PUSH_DOWNLOAD_PROGRESS_CRON = str(_config.get("cron_push_download_progress_cron", "")).strip()
+CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED = bool(CRON_PUSH_DOWNLOAD_PROGRESS_CRON)
 
 # 为了让配置文件尽量“只放 cron 表达式”，时间格式与文案在代码里使用默认值。
 CRON_SEND_CURRENT_TIME_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -99,6 +101,9 @@ CRON_SEND_CURRENT_TIME_MESSAGE_TEMPLATE = "corn定时发送 - 当前时间：{ti
 if CRON_SEND_CURRENT_TIME_ENABLED and croniter is None:
     log.error("已配置 cron_send_current_time_cron，但缺少 croniter 依赖，请运行: pip install croniter")
     CRON_SEND_CURRENT_TIME_ENABLED = False
+if CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED and croniter is None:
+    log.error("已配置 cron_push_download_progress_cron，但缺少 croniter 依赖，请运行: pip install croniter")
+    CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED = False
 
 
 def _build_tg_proxy_from_config():
@@ -286,6 +291,76 @@ def _get_status():
     return data
 
 
+def _format_progress_line(item: dict) -> str:
+    file_name = str(item.get("file_name") or "未知文件").strip()
+    sender = str(item.get("sender") or "未知").strip()
+    current_mb = item.get("current_mb", 0) or 0
+    total_mb = item.get("total_mb", 0) or 0
+    progress_pct = item.get("progress_pct", 0) or 0
+    elapsed_sec = int(item.get("elapsed_sec", 0) or 0)
+    speed_text = _format_speed(item.get("speed_bytes_per_sec"))
+    remain_text = _estimate_remaining_text(item)
+    return (
+        f"文件: {file_name}\n"
+        f"发送者: {sender}\n"
+        f"进度: {progress_pct}% ({current_mb:.2f} MB / {total_mb:.2f} MB)\n"
+        f"速度: {speed_text}\n"
+        f"预计剩余: {remain_text}\n"
+        f"已用时: {_format_duration(elapsed_sec)}"
+    )
+
+
+def _build_download_progress_status_text() -> str | None:
+    with _state_lock:
+        active_items = list(_active_downloads.values())
+        queue_size = _queue_size
+        pending_total = len(_pending_list)
+    if not active_items:
+        return None
+    waiting_count = max(0, pending_total - len(active_items))
+    lines = [
+        "📊 下载进度播报",
+        f"队列中数量: {queue_size}",
+        f"下载中数量: {len(active_items)}",
+        f"等待中数量: {waiting_count}",
+    ]
+    for idx, item in enumerate(active_items, start=1):
+        lines.append("")
+        lines.append(f"【{idx}】")
+        lines.append(_format_progress_line(item))
+    return "\n".join(lines)
+
+
+def _format_speed(speed_bps) -> str:
+    if speed_bps is None:
+        return "-"
+    speed_bps = float(speed_bps)
+    if speed_bps <= 0:
+        return "-"
+    if speed_bps >= 1 << 20:
+        return f"{speed_bps / (1 << 20):.2f} MB/s"
+    if speed_bps >= 1 << 10:
+        return f"{speed_bps / (1 << 10):.2f} KB/s"
+    return f"{speed_bps:.0f} B/s"
+
+
+def _estimate_remaining_text(item: dict) -> str:
+    speed_bps = item.get("speed_bytes_per_sec")
+    current_bytes = item.get("current_bytes", 0) or 0
+    total_mb = item.get("total_mb", 0) or 0
+    total_bytes = int(float(total_mb) * 1024 * 1024) if total_mb else 0
+    if speed_bps is None:
+        return "-"
+    try:
+        speed_bps = float(speed_bps)
+    except (TypeError, ValueError):
+        return "-"
+    if speed_bps <= 0 or total_bytes <= 0 or current_bytes >= total_bytes:
+        return "-"
+    remain_sec = int(max(0, (total_bytes - current_bytes) / speed_bps))
+    return _format_duration(remain_sec)
+
+
 def _is_in_pending(chat_id: int, message_id: int) -> bool:
     with _state_lock:
         return any(p["chat_id"] == chat_id and p["message_id"] == message_id for p in _pending_list)
@@ -377,9 +452,15 @@ async def _push_raw_text(msg, raw_text: str | None = None):
         return
     raw = (raw_text if raw_text is not None else _get_message_raw_text(msg)) or ""
     try:
-        await client.send_message(_target_chat_id, "📋 消息原文:\n" + (raw or "(无)"))
+        await client.send_message(_target_chat_id, raw)
     except Exception as e:
         log.warning("推送消息原文到群失败: %s", e)
+
+
+def _build_received_reply_text(has_video: bool, raw_text: str) -> str:
+    receive_text = "收到" if has_video else "收到。（本条消息无视频，未加入下载）"
+    raw = (raw_text or "").strip() or "(无)"
+    return f"{receive_text}\n\n📋 消息原文:\n{raw}"
 
 
 def _parse_tg_link(url: str):
@@ -824,22 +905,16 @@ async def handler(event):
         except Exception as e:
             log.debug("拉取完整消息用于视频检测失败: %s", e)
 
-    # 无论什么消息都回复「收到」，便于确认程序已处理；无视频时说明未加入下载
-    try:
-        has_video = _message_has_video(msg_to_check)
-        if has_video:
-            await event.reply("收到")
-        else:
-            await event.reply("收到。（本条消息无视频，未加入下载）")
-    except Exception as e:
-        log.warning("回复「收到」失败: %s", e)
-
     # 取消息正文：事件里的 message 有时未带全，空且是视频时用已拉取的 full
+    has_video = _message_has_video(msg_to_check)
     raw = _get_message_raw_text(event.message) or (getattr(event, "text", None) or "")
     if not raw and has_video:
         raw = _get_message_raw_text(msg_to_check) or ""
-    # 把消息原文推送到 downapp 群
-    await _push_raw_text(event.message, raw_text=raw or None)
+    # 把“收到”和消息原文合并成一条，避免刷屏
+    try:
+        await _push_raw_text(event.message, raw_text=_build_received_reply_text(has_video, raw))
+    except Exception as e:
+        log.warning("推送收到确认失败: %s", e)
     # 顺便在文本里查找是否有 Telegram 链接，如果有则尝试按链接下载对应视频
     await _handle_links_in_text(raw)
     if not has_video:
@@ -911,6 +986,26 @@ async def _cron_send_current_time_once(send_dt: datetime):
         log.warning("cron 发送当前时间到群失败: %s", e)
 
 
+async def _cron_push_download_progress_once(send_dt: datetime):
+    """定时推送下载进度；无下载任务时跳过。"""
+    if not CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED:
+        return
+    try:
+        if _target_chat_id is None:
+            await _ensure_target_chat()
+        if _target_chat_id is None:
+            log.warning("下载进度播报失败：未能解析到目标群 chat_id（%s）", TARGET_GROUP_NAME)
+            return
+        text = _build_download_progress_status_text()
+        if not text:
+            log.info("cron 下载进度播报跳过：当前没有进行中的下载任务")
+            return
+        await client.send_message(_target_chat_id, text)
+        log.info("cron 已推送下载进度: %s", send_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        log.warning("cron 推送下载进度到群失败: %s", e)
+
+
 async def _cron_send_current_time_loop():
     """根据 cron 表达式定时发送当前时间。"""
     if not CRON_SEND_CURRENT_TIME_ENABLED:
@@ -956,6 +1051,50 @@ async def _cron_send_current_time_loop():
             return
 
 
+async def _cron_push_download_progress_loop():
+    """根据 cron 表达式定时推送下载进度。"""
+    if not CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED:
+        return
+    if croniter is None:
+        log.error("croniter 依赖缺失，下载进度播报任务已禁用")
+        return
+    expr = CRON_PUSH_DOWNLOAD_PROGRESS_CRON
+    fields = expr.split()
+    if len(fields) not in (5, 6):
+        log.error("下载进度播报 cron 表达式字段数不合法: %r（支持 5 字段或 6 字段）", expr)
+        return
+
+    second_at_beginning = len(fields) == 6
+    try:
+        ci = croniter(
+            expr,
+            datetime.now(),
+            ret_type=datetime,
+            second_at_beginning=second_at_beginning,
+        )
+        next_dt = ci.get_next(datetime)
+        log.info("cron 下载进度播报已启用: expr=%s, next=%s", expr, next_dt.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception as e:
+        log.error("下载进度播报 cron 表达式解析失败: %r，错误: %s", expr, e)
+        return
+
+    while True:
+        now = datetime.now()
+        delay = (next_dt - now).total_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        else:
+            await asyncio.sleep(0)
+
+        await _cron_push_download_progress_once(next_dt)
+        try:
+            next_dt = ci.get_next(datetime)
+            log.info("下载进度播报 cron 下一次触发时间: %s", next_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception as e:
+            log.error("下载进度播报 cron 计算下一次触发时间失败: %s", e)
+            return
+
+
 if __name__ == "__main__":
     _init_db()
 
@@ -976,6 +1115,8 @@ if __name__ == "__main__":
             asyncio.create_task(_download_worker())
         if CRON_SEND_CURRENT_TIME_ENABLED:
             asyncio.create_task(_cron_send_current_time_loop())
+        if CRON_PUSH_DOWNLOAD_PROGRESS_ENABLED:
+            asyncio.create_task(_cron_push_download_progress_loop())
 
     with client:
         client.loop.run_until_complete(_start())

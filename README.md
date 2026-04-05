@@ -47,6 +47,7 @@
 | `download_retries` | `2` | 下载失败或卡住时的重试次数 |
 | `download_stall_seconds` | `600` | 多少秒无进度视为卡住并重试；`0` 表示不检测 |
 | `cron_send_current_time_cron` | `""` | cron 表达式：支持 5 字段（分钟 小时 日 月 星期）或 6 字段（秒 分钟 小时 日 月 星期） |
+| `cron_push_download_progress_cron` | `""` | 定时推送下载进度；仅当存在下载中的任务时才会发到目标群 |
 
 ### 代理（可选）
 
@@ -80,6 +81,7 @@
   "concurrent_downloads": 3,
   "push_status_to_group": true,
   "cron_send_current_time_cron": "*/5 * * * *",
+  "cron_push_download_progress_cron": "*/1 * * * *",
   "openai_api_key": "",
   "openai_base_url": "",
   "tg_proxy_type": "",
