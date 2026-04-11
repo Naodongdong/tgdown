@@ -31,22 +31,30 @@ except ImportError:
 from fastapi.responses import FileResponse
 import uvicorn
 
-# 统一日志：输出到 stdout，便于 docker logs 查看
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout,
-    force=True,
-)
-log = logging.getLogger(__name__)
-
-# ---------- 配置（从文件读取） ----------
-# 数据目录：脚本同级下的 data（本地）；Docker 挂载时为 /data
+# ---------- 数据目录（日志路径依赖） ----------
 SCRIPT_DIR = Path(__file__).resolve().parent
 _data_root = Path("/data")
 DATA_DIR = _data_root if (_data_root / "config.json").exists() else (SCRIPT_DIR / "data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = DATA_DIR / "tgdown.log"
+
+# 统一日志：stdout（便于 docker logs）+ 数据目录内 tgdown.log
+_log_fmt = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_root.handlers.clear()
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setFormatter(_log_fmt)
+_fh = logging.FileHandler(LOG_PATH, encoding="utf-8")
+_fh.setFormatter(_log_fmt)
+_root.addHandler(_sh)
+_root.addHandler(_fh)
+log = logging.getLogger(__name__)
+
+# ---------- 配置（从文件读取） ----------
 CONFIG_PATH = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "downloads.db"
 
@@ -331,6 +339,46 @@ def _build_download_progress_status_text() -> str | None:
     return "\n".join(lines)
 
 
+def _build_status_command_reply() -> str:
+    """群内「状态」查询：队列数量、待办列表、各下载中任务的进度。"""
+    with _state_lock:
+        active_items = list(_active_downloads.values())
+        queue_size = _queue_size
+        pending_list = list(_pending_list)
+    pending_total = len(pending_list)
+    waiting_count = max(0, pending_total - len(active_items))
+    lines = [
+        "📊 当前状态",
+        f"队列中数量: {queue_size}",
+        f"待办任务数: {pending_total}",
+        f"下载中数量: {len(active_items)}",
+        f"等待中数量: {waiting_count}",
+    ]
+    if active_items:
+        for idx, item in enumerate(active_items, start=1):
+            lines.append("")
+            lines.append(f"【下载中 {idx}】")
+            lines.append(_format_progress_line(item))
+    else:
+        lines.append("")
+        lines.append("当前无进行中的下载。")
+    if pending_list:
+        lines.append("")
+        lines.append("── 待办列表 ──")
+        max_rows = 40
+        for i, p in enumerate(pending_list[:max_rows], start=1):
+            fn = (p.get("file_name") or "").strip() or "(文件名待定)"
+            st = (p.get("status") or "").strip() or "?"
+            who = (p.get("sender_name") or "").strip() or "?"
+            lines.append(f"{i}. {who} | {st} | {fn}")
+        if len(pending_list) > max_rows:
+            lines.append(f"... 共 {len(pending_list)} 条，仅显示前 {max_rows} 条")
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3997] + "..."
+    return text
+
+
 def _format_speed(speed_bps) -> str:
     if speed_bps is None:
         return "-"
@@ -376,14 +424,36 @@ def _is_already_queued(chat_id: int, message_id: int) -> bool:
     return _is_in_pending(chat_id, message_id) or _is_in_active(chat_id, message_id)
 
 
+async def _send_to_target_group(text: str, *, kind: str = "status") -> tuple[bool, str | None]:
+    """向目标群发送文本。返回 (是否成功, 失败原因)；成功时第二项为 None。"""
+    if not PUSH_STATUS_TO_GROUP:
+        reason = "push_status_to_group 已关闭"
+        log.debug("群消息未发送 kind=%s: %s", kind, reason)
+        return False, reason
+    if _target_chat_id is None:
+        reason = "目标群 chat_id 未就绪"
+        log.warning("群消息发送失败 kind=%s: %s", kind, reason)
+        return False, reason
+    try:
+        sent = await client.send_message(_target_chat_id, text)
+        mid = getattr(sent, "id", None)
+        log.info(
+            "群消息发送成功 kind=%s chat_id=%s sent_msg_id=%s text_len=%d",
+            kind,
+            _target_chat_id,
+            mid,
+            len(text or ""),
+        )
+        return True, None
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+        log.warning("群消息发送失败 kind=%s: %s", kind, reason)
+        return False, reason
+
+
 async def _push_status(text: str):
     """把状态消息发到 downapp 群"""
-    if not PUSH_STATUS_TO_GROUP or _target_chat_id is None:
-        return
-    try:
-        await client.send_message(_target_chat_id, text)
-    except Exception as e:
-        log.warning("推送状态到群失败: %s", e)
+    await _send_to_target_group(text, kind="status")
 
 
 async def _ensure_target_chat():
@@ -446,15 +516,10 @@ def _get_message_raw_text(msg) -> str:
     return (raw or "").strip()
 
 
-async def _push_raw_text(msg, raw_text: str | None = None):
+async def _push_raw_text(msg, raw_text: str | None = None) -> tuple[bool, str | None]:
     """只将消息的正文/字幕发到群。若传 raw_text 则优先使用（避免事件里未带全）。"""
-    if not PUSH_STATUS_TO_GROUP or _target_chat_id is None:
-        return
     raw = (raw_text if raw_text is not None else _get_message_raw_text(msg)) or ""
-    try:
-        await client.send_message(_target_chat_id, raw)
-    except Exception as e:
-        log.warning("推送消息原文到群失败: %s", e)
+    return await _send_to_target_group(raw, kind="received_echo")
 
 
 def _build_received_reply_text(has_video: bool, raw_text: str) -> str:
@@ -626,17 +691,40 @@ def _resolve_conflict_path(path: str) -> str:
         index += 1
 
 
-def _cleanup_temp_file(path: str | None, download_id: str):
+def _cleanup_temp_file(path: str | None):
+    """删除下载失败时残留的临时文件（文件名必须以 temp_ 开头）。"""
     if not path:
         return
     try:
         p = Path(path)
         if not p.exists():
             return
-        if p.name.startswith(f"{download_id}_temp"):
+        if p.name.startswith("temp_"):
             p.unlink()
     except Exception as e:
         log.warning("清理临时文件失败: %s (%s)", path, e)
+
+
+def _safe_temp_path_for_final(final_path: str) -> str:
+    """与最终保存路径同目录、同主名规则：basename = temp_<最终文件名>。"""
+    p = Path(final_path)
+    return str(p.parent / f"temp_{p.name}")
+
+
+def _validate_temp_and_final_paths(temp_path: str, final_path: str) -> bool:
+    """校验：临时文件必须以 temp_ 开头且为「temp_ + 最终文件名」；最终文件不得以 temp_ 开头。"""
+    t = Path(temp_path).name
+    f = Path(final_path).name
+    if f.startswith("temp_"):
+        log.error("最终保存路径不得以 temp_ 开头: %s", final_path)
+        return False
+    if not t.startswith("temp_"):
+        log.error("临时路径必须以 temp_ 开头: %s", temp_path)
+        return False
+    if t != f"temp_{f}":
+        log.error("临时文件名应为 temp_<最终文件名>，实际 temp=%s final=%s", t, f)
+        return False
+    return True
 
 
 async def _build_final_basename(message, original_base: str, ts_str: str, ext: str) -> str:
@@ -750,16 +838,34 @@ async def _download_worker():
                 continue
 
             file_name = _get_media_file_name(message)
-            _set_pending_file_name(chat_id, message_id, file_name)
-            _update_active(download_id, file_name=file_name)
+            name_no_ext, ext = os.path.splitext(file_name)
+            ext = _normalize_media_ext(ext)
+            ts_str = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+            final_basename = await _build_final_basename(message, name_no_ext, ts_str, ext)
+            final_path = _resolve_conflict_path(os.path.join(DOWNLOAD_PATH, final_basename))
+            temp_path = _safe_temp_path_for_final(final_path)
+            if not _validate_temp_and_final_paths(temp_path, final_path):
+                _remove_pending(chat_id, message_id)
+                _remove_active(download_id)
+                await _push_status(f"❌ 内部错误：临时/最终路径校验失败\n发送者: {sender_name}")
+                log.error("临时/最终路径校验失败: temp=%s final=%s", temp_path, final_path)
+                continue
+
+            _set_pending_file_name(chat_id, message_id, os.path.basename(final_path))
+            _update_active(download_id, file_name=os.path.basename(final_path), temp_path=temp_path, final_path=final_path)
 
             last_error = None
             for attempt in range(DOWNLOAD_RETRIES + 1):
-                temp_path = None
                 try:
                     _update_active(download_id, last_progress_time=time.time())
+                    try:
+                        if os.path.isfile(temp_path):
+                            os.unlink(temp_path)
+                    except OSError as e:
+                        log.warning("删除残留临时文件失败（将尝试覆盖下载）: %s (%s)", temp_path, e)
+
                     download_coro = message.download_media(
-                        file=DOWNLOAD_PATH,
+                        file=temp_path,
                         progress_callback=_make_progress_callback(download_id),
                     )
                     download_task = asyncio.create_task(download_coro)
@@ -782,7 +888,7 @@ async def _download_worker():
 
                     watchdog_task = asyncio.create_task(_stall_watchdog()) if DOWNLOAD_STALL_SECONDS > 0 else None
                     try:
-                        file_path = await download_task
+                        downloaded = await download_task
                     finally:
                         if watchdog_task is not None:
                             watchdog_task.cancel()
@@ -791,23 +897,17 @@ async def _download_worker():
                             except asyncio.CancelledError:
                                 pass
 
-                    file_path = str(Path(file_path).resolve())
-                    dirname, basename = os.path.split(file_path)
-                    name_no_ext, ext = os.path.splitext(basename)
-                    ext = _normalize_media_ext(ext)
-                    # 立即重命名为临时安全名，避免保留 Telegram/发送者文件名中的标点等
-                    safe_temp_basename = f"{download_id}_temp{ext}"
-                    temp_path = _resolve_conflict_path(os.path.join(dirname, safe_temp_basename))
-                    if file_path != temp_path:
-                        shutil.move(file_path, temp_path)
-                        file_path = temp_path
-                    now = datetime.now()
-                    ts_str = now.strftime("%Y_%m_%d_%H_%M_%S")
-                    new_basename = await _build_final_basename(message, name_no_ext, ts_str, ext)
-                    new_path = _resolve_conflict_path(os.path.join(dirname, new_basename))
-                    if file_path != new_path:
-                        shutil.move(file_path, new_path)
-                        file_path = new_path
+                    got = str(Path(downloaded).resolve()) if downloaded else str(Path(temp_path).resolve())
+                    if got != str(Path(temp_path).resolve()) and os.path.isfile(got):
+                        log.warning("下载落盘路径与预期 temp 不一致，将移动到 temp: got=%s expect=%s", got, temp_path)
+                        shutil.move(got, temp_path)
+                    if not os.path.isfile(temp_path):
+                        raise FileNotFoundError(f"临时文件未生成: {temp_path}")
+                    if not _validate_temp_and_final_paths(temp_path, final_path):
+                        raise RuntimeError("下载完成后临时/最终路径校验失败")
+                    shutil.move(temp_path, final_path)
+                    file_path = str(Path(final_path).resolve())
+
                     file_size = os.path.getsize(file_path)
                     message_time_str = ""
                     if getattr(message, "date", None):
@@ -836,10 +936,10 @@ async def _download_worker():
                         f"大小: {_format_size(file_size)}\n"
                         f"用时: {_format_duration(duration_sec)}"
                     )
-                    log.info("下载完成: %s (%s bytes)", file_path, file_size)
+                    log.info("下载完成: %s (%s bytes)（已从 temp 落盘到最终路径）", file_path, file_size)
                     break
                 except asyncio.CancelledError:
-                    _cleanup_temp_file(temp_path, download_id)
+                    _cleanup_temp_file(temp_path)
                     # 由看门狗因“进度无变化”取消，视为卡住
                     last_error = None
                     if attempt < DOWNLOAD_RETRIES:
@@ -853,7 +953,7 @@ async def _download_worker():
                         await _push_status(f"❌ 下载卡住（{DOWNLOAD_STALL_SECONDS}s 无进度）\n发送者: {sender_name}\n已重试 {DOWNLOAD_RETRIES + 1} 次")
                         log.error("下载卡住，已重试 %d 次", DOWNLOAD_RETRIES + 1)
                 except Exception as e:
-                    _cleanup_temp_file(temp_path, download_id)
+                    _cleanup_temp_file(temp_path)
                     last_error = e
                     if attempt < DOWNLOAD_RETRIES:
                         log.warning("下载失败第 %d 次，重试中: %s", attempt + 1, e)
@@ -895,42 +995,91 @@ async def handler(event):
     if _target_chat_id is None:
         _target_chat_id = event.chat_id
 
+    sender = await event.get_sender()
+    sender_label = getattr(sender, "username", None) or getattr(sender, "first_name", "未知")
+
     # 转发消息时事件里可能未带完整 media，先拉取完整消息再判断是否为视频
     msg_to_check = event.message
+    fetch_full_ok: bool | None = None
+    fetch_full_err: str | None = None
     if getattr(event.message, "media", None) and not _message_has_video(event.message):
         try:
             full = await client.get_messages(event.chat_id, ids=event.message.id)
             if full:
                 msg_to_check = full
+                fetch_full_ok = True
+            else:
+                fetch_full_ok = False
+                fetch_full_err = "get_messages 返回空"
         except Exception as e:
-            log.debug("拉取完整消息用于视频检测失败: %s", e)
+            fetch_full_ok = False
+            fetch_full_err = f"{type(e).__name__}: {e}"
+            log.warning("拉取完整消息用于视频检测失败: %s", fetch_full_err)
+    fetch_note = "跳过"
+    if fetch_full_ok is True:
+        fetch_note = "成功"
+    elif fetch_full_ok is False:
+        fetch_note = f"失败({fetch_full_err})"
 
     # 取消息正文：事件里的 message 有时未带全，空且是视频时用已拉取的 full
     has_video = _message_has_video(msg_to_check)
     raw = _get_message_raw_text(event.message) or (getattr(event, "text", None) or "")
     if not raw and has_video:
         raw = _get_message_raw_text(msg_to_check) or ""
-    # 把“收到”和消息原文合并成一条，避免刷屏
-    try:
-        await _push_raw_text(event.message, raw_text=_build_received_reply_text(has_video, raw))
-    except Exception as e:
-        log.warning("推送收到确认失败: %s", e)
+
+    is_status_query = "状态" in raw
+    only_status_word = raw.strip() == "状态"
+
+    if is_status_query:
+        await _send_to_target_group(_build_status_command_reply(), kind="status_command")
+        log.info(
+            "已响应群内「状态」查询: chat_id=%s msg_id=%s sender=%s",
+            event.chat_id,
+            event.message.id,
+            sender_label,
+        )
+
+    if only_status_word:
+        echo_ok, echo_err = True, None
+        echo_note = "跳过(纯状态查询)"
+    else:
+        echo_ok, echo_err = await _push_raw_text(
+            event.message, raw_text=_build_received_reply_text(has_video, raw)
+        )
+        if echo_ok:
+            echo_note = "成功"
+        elif echo_err == "push_status_to_group 已关闭":
+            echo_note = "未发送(功能已关闭)"
+        else:
+            echo_note = f"失败({echo_err})"
+    log.info(
+        "收到目标群消息: chat_id=%s msg_id=%s sender=%s has_video=%s text_len=%s 拉取完整消息=%s 回显发送=%s",
+        event.chat_id,
+        event.message.id,
+        sender_label,
+        has_video,
+        len(raw),
+        fetch_note,
+        echo_note,
+    )
+
     # 顺便在文本里查找是否有 Telegram 链接，如果有则尝试按链接下载对应视频
     await _handle_links_in_text(raw)
     if not has_video:
+        log.info("群消息处理结束（无视频）: chat_id=%s msg_id=%s", event.chat_id, event.message.id)
         return
     if _download_queue is None:
+        log.warning("群消息含视频但未入队: download_queue 未初始化 chat_id=%s msg_id=%s", event.chat_id, event.message.id)
         return
 
-    sender = await event.get_sender()
-    name = getattr(sender, "username", None) or getattr(sender, "first_name", "未知")
-
+    name = sender_label
     if _is_already_queued(event.chat_id, event.message.id):
         log.info("已在队列或下载中，跳过重复: chat_id=%s msg_id=%s", event.chat_id, event.message.id)
         return
     log.info("收到群 [%s] 里 %s 的视频，加入队列", TARGET_GROUP_NAME, name)
     await _enqueue(event.chat_id, event.message.id, name)
     await _push_status(f"📥 已加入下载队列：{name} 的视频（当前队列共 {_queue_size} 个）")
+    log.info("群消息处理结束（已入队视频）: chat_id=%s msg_id=%s sender=%s", event.chat_id, event.message.id, name)
 
 
 # ---------- FastAPI ----------
@@ -980,8 +1129,11 @@ async def _cron_send_current_time_once(send_dt: datetime):
 
         time_str = send_dt.strftime(CRON_SEND_CURRENT_TIME_TIME_FORMAT)
         text = CRON_SEND_CURRENT_TIME_MESSAGE_TEMPLATE.format(time=time_str)
-        await client.send_message(_target_chat_id, text)
-        log.info("cron 已发送当前时间: %s", time_str)
+        ok, err = await _send_to_target_group(text, kind="cron_current_time")
+        if ok:
+            log.info("cron 已发送当前时间: %s", time_str)
+        else:
+            log.warning("cron 发送当前时间未成功: %s", err)
     except Exception as e:
         log.warning("cron 发送当前时间到群失败: %s", e)
 
@@ -1000,8 +1152,11 @@ async def _cron_push_download_progress_once(send_dt: datetime):
         if not text:
             log.info("cron 下载进度播报跳过：当前没有进行中的下载任务")
             return
-        await client.send_message(_target_chat_id, text)
-        log.info("cron 已推送下载进度: %s", send_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        ok, err = await _send_to_target_group(text, kind="cron_download_progress")
+        if ok:
+            log.info("cron 已推送下载进度: %s", send_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        else:
+            log.warning("cron 推送下载进度未成功: %s", err)
     except Exception as e:
         log.warning("cron 推送下载进度到群失败: %s", e)
 
@@ -1100,6 +1255,7 @@ if __name__ == "__main__":
 
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
+    log.info("日志文件: %s", LOG_PATH)
     log.info("Web 已启动: port=%s bind=%s", WEB_PORT, WEB_BIND)
     log.info(
         "并发数: %s，卡住检测: %ss 无进度则重试，失败重试: %s 次",
