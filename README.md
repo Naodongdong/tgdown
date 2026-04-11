@@ -55,31 +55,27 @@
 | `tg_proxy_username` | 否 | `""` | Telegram 代理用户名，没有可留空 |
 | `tg_proxy_password` | 否 | `""` | Telegram 代理密码，没有可留空 |
 
-修改 `tg_device_name` 后，若 Telegram 里仍显示旧设备名，可删除 `data/session.session`（或 Docker 挂载目录下的同名文件）后重新登录，再于「活跃会话」中查看。
 
 ### 配置示例
 
 ```json
 {
-  "api_id": 368,
-  "api_hash": "e1ffa7e97d1545eb2d",
-  "tg_device_name": "家里NAS-tgdown",
+  "api_id": 36684684,
+  "api_hash": "",
+  "tg_device_name": "tgdown",
   "tg_system_version": "",
   "tg_app_version": "",
   "tg_message_prefix": "[tgdown]",
   "download_path": "./downloads",
   "web_port": 8765,
-  "web_bind": "0.0.0.0",
-  "target_group_name": "down",
+  "target_group_name": "tgdown",
   "concurrent_downloads": 3,
   "push_status_to_group": true,
-  "download_retries": 2,
-  "download_stall_seconds": 600,
-  "cron_send_current_time_cron": "*/5 * * * *",
-  "cron_push_download_progress_cron": "*/1 * * * *",
+  "cron_send_current_time_cron": "1 1 9 * *",
+  "cron_push_download_progress_cron": "1 1/5 * * *",
   "openai_api_key": "",
   "openai_base_url": "",
-  "tg_proxy_type": "",
+  "tg_proxy_type": "http",
   "tg_proxy_host": "",
   "tg_proxy_port": 7893,
   "tg_proxy_username": "",
