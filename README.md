@@ -8,7 +8,7 @@
 
 - **群消息监听**：在指定 Telegram 群中，有视频消息时自动加入下载队列并下载
 - **链接解析**：群消息正文中的 `t.me/用户名/消息ID` 链接会自动解析并加入下载队列
-- **状态推送**：下载开始/完成/失败时可推送到该群（可关闭）
+- **状态推送**：下载开始/完成/失败时可推送到该群（可关闭）；进程启动完成后也会推送一条「已启动」及当前时间（同样受该开关控制）
 - **Web 面板**：实时查看正在下载、未下载列表、最近记录；数据库记录支持分页
 - **持久化**：下载成功记录写入 SQLite，支持分页查询
 - **可选代理**：支持 SOCKS5/SOCKS4/HTTP 代理
@@ -33,12 +33,15 @@
 |--------|----------|--------|------|
 | `api_id` | 是 | 无 | Telegram 应用 `api_id` |
 | `api_hash` | 是 | 无 | Telegram 应用 `api_hash` |
+| `tg_device_name` | 否 | `"tgdown"` | 登录后在 Telegram「设置 → 隐私与安全 → 活跃会话」中显示的设备名，便于区分多台机器；也支持旧键名 `device_model` |
+| `tg_system_version` | 否 | `""` | 可选，会话里显示的系统版本；留空则使用 Telethon 默认 |
+| `tg_app_version` | 否 | `""` | 可选，会话里显示的应用版本；留空则使用 Telethon 默认 |
 | `target_group_name` | 否 | `"downapp"` | 监听的目标群名称，需与群标题一致 |
 | `download_path` | 否 | `"./downloads"` | 下载保存目录，相对路径基于 `data` 的父目录 |
 | `web_port` | 否 | `8765` | Web 面板端口 |
 | `web_bind` | 否 | `"0.0.0.0"` | Web 绑定地址，仅本机访问可填 `127.0.0.1` |
 | `concurrent_downloads` | 否 | `3` | 并发下载数 |
-| `push_status_to_group` | 否 | `true` | 是否把状态消息推送到目标群 |
+| `push_status_to_group` | 否 | `true` | 是否把状态消息推送到目标群（含下载进度、启动完成通知等） |
 | `download_retries` | 否 | `2` | 下载失败或卡住时的重试次数 |
 | `download_stall_seconds` | 否 | `600` | 连续多少秒无进度视为卡住并重试，`0` 表示关闭 |
 | `cron_send_current_time_cron` | 否 | `""` | 定时发送当前时间的 cron 表达式，支持 5 或 6 字段 |
@@ -51,12 +54,17 @@
 | `tg_proxy_username` | 否 | `""` | Telegram 代理用户名，没有可留空 |
 | `tg_proxy_password` | 否 | `""` | Telegram 代理密码，没有可留空 |
 
+修改 `tg_device_name` 后，若 Telegram 里仍显示旧设备名，可删除 `data/session.session`（或 Docker 挂载目录下的同名文件）后重新登录，再于「活跃会话」中查看。
+
 ### 配置示例
 
 ```json
 {
   "api_id": 368,
   "api_hash": "e1ffa7e97d1545eb2d",
+  "tg_device_name": "家里NAS-tgdown",
+  "tg_system_version": "",
+  "tg_app_version": "",
   "download_path": "./downloads",
   "web_port": 8765,
   "web_bind": "0.0.0.0",
