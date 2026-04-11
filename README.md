@@ -20,6 +20,7 @@
 
 - Python 3.10+
 - Telegram API 凭证：在 [my.telegram.org](https://my.telegram.org) 申请 `api_id` 与 `api_hash`
+- 依赖见根目录 **`requirements.txt`**。若启用 **HTTP/SOCKS 代理**（`tg_proxy_*`），需同时安装 **`pysocks`** 与 **`python-socks[asyncio]`**；Telethon 新版代理依赖后者，仅装 `pysocks` 时，部分版本会在启动阶段出现 `UnboundLocalError: ... warnings ...`（与 `python-socks` 缺失有关）。Docker 请重新构建镜像以安装更新后的依赖。
 
 ---
 
