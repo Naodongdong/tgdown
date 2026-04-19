@@ -84,6 +84,7 @@ _config = load_config()
 api_id = int(_config["api_id"])
 api_hash = str(_config["api_hash"]).strip()
 DOWNLOAD_PATH = _config.get("download_path", "./downloads")
+TEMP_PATH = _config.get("temp_path", "./temp_downloads")
 WEB_PORT = int(_config.get("web_port", 8765))
 WEB_BIND = _config.get("web_bind", "0.0.0.0")  # 可选：仅本机访问填 127.0.0.1
 TARGET_GROUP_NAME = _config.get("target_group_name", "downapp")
@@ -170,12 +171,28 @@ def _build_tg_proxy_from_config():
     return (proxy_type, host, int(port), True, username, password)
 
 
-# 下载目录：与 data 同级（相对路径基于 DATA_DIR 的父目录）
-DOWNLOAD_PATH = Path(DOWNLOAD_PATH)
-if not DOWNLOAD_PATH.is_absolute():
-    DOWNLOAD_PATH = DATA_DIR.parent / DOWNLOAD_PATH
+def _resolve_storage_dir(path_value: str, default_name: str) -> Path:
+    """把配置目录解析为绝对路径；相对路径基于 data 的父目录。"""
+    p = Path(path_value or default_name)
+    if not p.is_absolute():
+        p = DATA_DIR.parent / p
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+# 下载目录、临时目录：与 data 同级（相对路径基于 DATA_DIR 的父目录）
+DOWNLOAD_PATH = _resolve_storage_dir(str(DOWNLOAD_PATH or ""), "downloads")
+TEMP_PATH = _resolve_storage_dir(str(TEMP_PATH or ""), "temp_downloads")
+if DOWNLOAD_PATH.resolve() == TEMP_PATH.resolve():
+    adjusted_temp = DOWNLOAD_PATH.parent / "temp_downloads"
+    if adjusted_temp.resolve() == DOWNLOAD_PATH.resolve():
+        adjusted_temp = DOWNLOAD_PATH.parent / f"{DOWNLOAD_PATH.name}_temp"
+    adjusted_temp.mkdir(parents=True, exist_ok=True)
+    log.warning("temp_path 与 download_path 相同，临时目录自动调整为: %s", adjusted_temp)
+    TEMP_PATH = adjusted_temp
+
 DOWNLOAD_PATH = str(DOWNLOAD_PATH)
-os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+TEMP_PATH = str(TEMP_PATH)
 
 SESSION_PATH = str(DATA_DIR / "session")
 _TG_PROXY = _build_tg_proxy_from_config()
@@ -743,29 +760,31 @@ def _resolve_conflict_path(path: str) -> str:
 
 
 def _cleanup_temp_file(path: str | None):
-    """删除下载失败时残留的临时文件（文件名必须以 temp_ 开头）。"""
+    """删除下载失败时残留的临时文件（仅清理 TEMP_PATH 目录内的 temp_* 文件）。"""
     if not path:
         return
     try:
         p = Path(path)
         if not p.exists():
             return
-        if p.name.startswith("temp_"):
+        if p.resolve().parent == Path(TEMP_PATH).resolve() and p.name.startswith("temp_"):
             p.unlink()
     except Exception as e:
         log.warning("清理临时文件失败: %s (%s)", path, e)
 
 
 def _safe_temp_path_for_final(final_path: str) -> str:
-    """与最终保存路径同目录、同主名规则：basename = temp_<最终文件名>。"""
+    """临时文件统一落到 TEMP_PATH，文件名规则：temp_<最终文件名>。"""
     p = Path(final_path)
-    return str(p.parent / f"temp_{p.name}")
+    return str(Path(TEMP_PATH) / f"temp_{p.name}")
 
 
 def _validate_temp_and_final_paths(temp_path: str, final_path: str) -> bool:
-    """校验：临时文件必须以 temp_ 开头且为「temp_ + 最终文件名」；最终文件不得以 temp_ 开头。"""
-    t = Path(temp_path).name
-    f = Path(final_path).name
+    """校验：临时文件仅允许落在 TEMP_PATH，最终文件仅允许落在 DOWNLOAD_PATH。"""
+    temp_obj = Path(temp_path)
+    final_obj = Path(final_path)
+    t = temp_obj.name
+    f = final_obj.name
     if f.startswith("temp_"):
         log.error("最终保存路径不得以 temp_ 开头: %s", final_path)
         return False
@@ -774,6 +793,12 @@ def _validate_temp_and_final_paths(temp_path: str, final_path: str) -> bool:
         return False
     if t != f"temp_{f}":
         log.error("临时文件名应为 temp_<最终文件名>，实际 temp=%s final=%s", t, f)
+        return False
+    if temp_obj.resolve().parent != Path(TEMP_PATH).resolve():
+        log.error("临时文件必须位于 TEMP_PATH 目录内: %s", temp_path)
+        return False
+    if final_obj.resolve().parent != Path(DOWNLOAD_PATH).resolve():
+        log.error("最终文件必须位于 DOWNLOAD_PATH 目录内: %s", final_path)
         return False
     return True
 
@@ -788,7 +813,7 @@ async def _build_final_basename(message, original_base: str, ts_str: str, ext: s
             name_from_ai = await asyncio.to_thread(generate_video_filename_from_text, msg_text)
             name_from_ai = _sanitize_basename(name_from_ai)
             if name_from_ai and name_from_ai != "video":
-                return f"{name_from_ai}_{ts_str}_ai{ext}"
+                return f"ai_{name_from_ai}_{ts_str}{ext}"
         except Exception as e:
             log.warning("根据文案生成文件名失败，将使用原文件名规则: %s", e)
 
@@ -798,11 +823,11 @@ async def _build_final_basename(message, original_base: str, ts_str: str, ext: s
             name_from_ai2 = await asyncio.to_thread(generate_video_filename_from_text, cleaned_base)
             name_from_ai2 = _sanitize_basename(name_from_ai2)
             if name_from_ai2 and name_from_ai2 != "video":
-                return f"{ts_str}_{name_from_ai2}_ai{ext}"
+                return f"ai_{name_from_ai2}_{ts_str}{ext}"
         except Exception as e:
             log.warning("根据原文件名生成文件名失败，使用清洗后的原名: %s", e)
 
-    return f"{ts_str}_{cleaned_base}{ext}"
+    return f"{cleaned_base}_{ts_str}{ext}"
 
 
 def _has_chinese(s: str) -> bool:
@@ -1307,6 +1332,8 @@ if __name__ == "__main__":
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
     log.info("日志文件: %s", LOG_PATH)
+    log.info("下载目录: %s", DOWNLOAD_PATH)
+    log.info("临时目录: %s", TEMP_PATH)
     log.info("Web 已启动: port=%s bind=%s", WEB_PORT, WEB_BIND)
     log.info(
         "并发数: %s，卡住检测: %ss 无进度则重试，失败重试: %s 次",

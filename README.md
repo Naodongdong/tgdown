@@ -11,6 +11,7 @@
 - **状态推送**：下载开始/完成/失败时可推送到该群（可关闭）；进程启动完成后也会推送一条「已启动」及当前时间（同样受该开关控制）
 - **Web 面板**：实时查看正在下载、未下载列表、最近记录；数据库记录支持分页
 - **持久化**：下载成功记录写入 SQLite，支持分页查询
+- **临时目录分离**：下载中的临时文件统一放入独立临时目录，不再和最终视频文件混放
 - **可选代理**：支持 SOCKS5/SOCKS4/HTTP 代理
 - **可选 AI 命名**：配置 OpenAI 兼容 API 后，可根据消息文案或原文件名生成更友好的本地文件名
 
@@ -40,6 +41,7 @@
 | `tg_message_prefix` | 否 | `"[tgdown]"` | 脚本自动发往群的消息会在**首行**加该标识（与正文换行分隔），便于与人工消息区分；设为 `""` 则不加 |
 | `target_group_name` | 否 | `"downapp"` | 监听的目标群名称，需与群标题一致 |
 | `download_path` | 否 | `"./downloads"` | 下载保存目录，相对路径基于 `data` 的父目录 |
+| `temp_path` | 否 | `"./temp_downloads"` | 临时下载目录，下载过程中的 `temp_*` 文件只会放这里，相对路径基于 `data` 的父目录 |
 | `web_port` | 否 | `8765` | Web 面板端口 |
 | `web_bind` | 否 | `"0.0.0.0"` | Web 绑定地址，仅本机访问可填 `127.0.0.1` |
 | `concurrent_downloads` | 否 | `3` | 并发下载数 |
@@ -68,6 +70,7 @@
   "tg_app_version": "",
   "tg_message_prefix": "[tgdown]",
   "download_path": "./downloads",
+  "temp_path": "./temp_downloads",
   "web_port": 8765,
   "target_group_name": "tgdown",
   "concurrent_downloads": 3,
@@ -113,13 +116,13 @@ docker run -d \
   --network host \
   -v "$(pwd)/data:/data" \
   -v "$(pwd)/downloads:/downloads" \
+  -v "$(pwd)/temp_downloads:/temp_downloads" \
   --restart=always \
   xxgl/tgdown:1.2
 ```
 下载文件命名规则
-- 1、消息有文案且 AI 命名成功：`AI文件名_时间_ai.mp4`
-- 2、原文件名含中文且 AI 整理成功：`时间_AI整理名_ai.mp4`
-- 3、未走 AI 命名：`时间_清洗后的原文件名.mp4`
+- 1、AI 命名成功（优先消息文案，其次中文原文件名）：`ai_AI文件名_时间.mp4`
+- 2、未走 AI 命名：`清洗后的原文件名_时间.mp4`
 
 
 ![qun](/docs/images/qun.png)
