@@ -102,7 +102,7 @@ cd tgdown
 docker run --rm -it \
   --name tgdown \
   --network host \
-  -v "$(pwd)/data:/data" \
+  -v "/data/server/downapp/data:/data" \
   xxgl/tgdown:1.2
 ```
 ![init](/docs/images/init.png)
@@ -111,12 +111,12 @@ docker run --rm -it \
 ```bash
 cd tgdown
 # 运行（挂载 data 和 downloads 目录，端口 8765）
+# 运行时需要把挂载路径替换为自己的实际路径
 docker run -d \
   --name tgdown \
   --network host \
-  -v "$(pwd)/data:/data" \
-  -v "$(pwd)/downloads:/downloads" \
-  -v "$(pwd)/temp_downloads:/temp_downloads" \
+  -v "/data/server/downapp/data:/data" \
+  -v "/data/yp/downloads:/downloads" \
   --restart=always \
   xxgl/tgdown:1.2
 ```
